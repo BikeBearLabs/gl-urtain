@@ -1,0 +1,10 @@
+jank
+lerp
+linkcode
+invalidators
+invalidator
+nameof
+ivec
+uvec
+texel
+highp
