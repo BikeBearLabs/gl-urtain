@@ -11,6 +11,7 @@ export default defineConfig(({ mode }) => ({
 			formats: ['umd'],
 			name: pkg.name,
 		},
+		sourcemap: true,
 		rollupOptions: {
 			input: {
 				index: 'src/index.ts',
