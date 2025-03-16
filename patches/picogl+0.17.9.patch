@@ -1,0 +1,22 @@
+diff --git a/node_modules/picogl/build/types.d.ts b/node_modules/picogl/build/types.d.ts
+index 4bbfa64..a4868fe 100644
+--- a/node_modules/picogl/build/types.d.ts
++++ b/node_modules/picogl/build/types.d.ts
+@@ -314,7 +314,7 @@ export class App {
+      * @returns Promise that will resolve to an array of Programs when compilation and
+      *             linking are complete for all programs.
+      */
+-    createPrograms(...sources: any[][]): Promise<Program[]>;
++    createPrograms<const T extends Parameters<typeof createProgram>[]>(...sources: T): Promise<Record<keyof T, Program> & Program[]>;
+     /**
+      * Restore several programs after a context loss. Will do so in parallel where available.
+      * @param sources - Variable number of programs to restore.
+@@ -2149,7 +2149,7 @@ export class UniformBuffer {
+      * @param value - Value to store at the layout location.
+      * @returns The UniformBuffer object.
+      */
+-    set(index: number, value: ArrayBufferView): UniformBuffer;
++    set(index: number, value: ArrayLike<number> | number): UniformBuffer;
+     /**
+      * Send stored buffer data to the GPU.
+      * @returns The UniformBuffer object.
