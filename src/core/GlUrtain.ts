@@ -150,9 +150,7 @@ export class GlUrtain extends HTMLElement {
 		requestAnimationFrame(draw);
 	}
 
-	public onVisibilityChange:
-		| ((event: CustomEvent<boolean>) => void)
-		| undefined;
+	public onVisibilityChange?: (event: CustomEvent<boolean>) => void;
 	protected handleVisibilityChange(visible: boolean) {
 		this.style.display = visible ? '' : 'none';
 		const event = new CustomEvent('visibilitychange', {
