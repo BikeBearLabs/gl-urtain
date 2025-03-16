@@ -2,6 +2,10 @@ import { type HexColor } from './HexColor.js';
 import { type RgbaColor } from './RgbaColor.js';
 
 export function hexToRgba(hex: HexColor): RgbaColor {
+	if (!hex.startsWith('#')) {
+		return [NaN, NaN, NaN, NaN];
+	}
+
 	const hexString = hex.slice(1);
 
 	if (hexString.length <= 4) {
