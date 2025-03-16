@@ -4,6 +4,7 @@ precision highp float;
 layout(location = 0) in ivec2 aTexelCoord;
 layout(location = 1) in vec2 aUV;
 
+uniform vec3 uPositionOffset;
 uniform sampler2D uPositionBuffer;
 uniform sampler2D uNormalBuffer;
 
@@ -19,7 +20,8 @@ out vec2 vUV;
 out vec3 vNormal;
 
 void main() {
-	vec3 position = texelFetch(uPositionBuffer, aTexelCoord, 0).xyz;
+	vec3 position =
+		texelFetch(uPositionBuffer, aTexelCoord, 0).xyz + uPositionOffset;
 
 	vPosition = position;
 	vNormal = texelFetch(uNormalBuffer, aTexelCoord, 0).xyz;

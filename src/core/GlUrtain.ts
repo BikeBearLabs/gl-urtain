@@ -1,43 +1,22 @@
-import { Store } from '@/lib/store/Store.js';
-import { PicoGL } from 'picogl';
-import { createCurtain } from './createCurtain.js';
 import { type HexColor } from '@/lib/color/HexColor.js';
 import { type RgbaColor } from '@/lib/color/RgbaColor.js';
 import { hexToRgba } from '@/lib/color/hexToRgba.js';
-import { coerceToRgba } from '@/lib/color/coerceToRgba.js';
+import { Store } from '@/lib/store/Store.js';
+import { PicoGL } from 'picogl';
+import { createCurtain } from './createCurtain.js';
 
 export class GlUrtain extends HTMLElement {
-	#scrunchness = 0.5;
-	public get scrunchness() {
-		return this.#scrunchness;
-	}
-	public set scrunchness(value) {
-		this.#scrunchness = Math.max(0, Math.min(1, value));
-	}
-
-	#lightColor: RgbaColor = hexToRgba('#fff');
-	public get lightColor(): RgbaColor {
-		return this.#lightColor;
-	}
-	public set lightColor(value: RgbaColor | HexColor) {
-		this.#lightColor = coerceToRgba(value);
-	}
-
-	#shadowColor: RgbaColor = hexToRgba('#ed9f53');
-	public get shadowColor(): RgbaColor {
-		return this.#shadowColor;
-	}
-	public set shadowColor(value: RgbaColor | HexColor) {
-		this.#shadowColor = coerceToRgba(value);
-	}
-
-	#diffuseColor: RgbaColor = hexToRgba('#fff4e6');
-	public get diffuseColor(): RgbaColor {
-		return this.#diffuseColor;
-	}
-	public set diffuseColor(value: RgbaColor | HexColor) {
-		this.#diffuseColor = coerceToRgba(value);
-	}
+	public scrunchness = Number(this.getAttribute('scrunchness') ?? 0.5);
+	public lightColor: RgbaColor | HexColor = hexToRgba(
+		(this.getAttribute('lightColor') as HexColor) ?? '#fff',
+	);
+	public shadowColor: RgbaColor | HexColor = hexToRgba(
+		(this.getAttribute('shadowColor') as HexColor) ?? '#9c8c7c',
+	);
+	public diffuseColor: RgbaColor | HexColor = hexToRgba(
+		(this.getAttribute('diffuseColor') as HexColor) ?? '#fff4e6',
+	);
+	public playing = true;
 
 	private readonly shadow = this.attachShadow({ mode: 'open' });
 
@@ -99,23 +78,53 @@ export class GlUrtain extends HTMLElement {
 		return app;
 	})();
 
-	public async connectedCallback() {
+	protected async connectedCallback() {
 		const { canvas, canvasSize, app } = this;
 
 		const { draw: drawA } = await createCurtain({
 			app,
 			canvas,
 			canvasSize,
+			onVisibilityChange: (v) => {
+				this.handleVisibilityChange(v);
+			},
 		});
 		const { draw: drawB } = await createCurtain({
 			app,
 			canvas,
 			canvasSize,
+			onVisibilityChange: (v) => {
+				this.handleVisibilityChange(v);
+			},
 		});
-		const { scrunchness, lightColor, shadowColor, diffuseColor } = this;
 
-		requestAnimationFrame(function draw() {
+		const draw = () => {
 			requestAnimationFrame(draw);
+
+			let {
+				playing,
+				scrunchness,
+				lightColor,
+				shadowColor,
+				diffuseColor,
+			} = this;
+
+			if (!playing) {
+				return;
+			}
+
+			if (typeof lightColor === 'string') {
+				lightColor = hexToRgba(lightColor);
+				this.lightColor = lightColor;
+			}
+			if (typeof shadowColor === 'string') {
+				shadowColor = hexToRgba(shadowColor);
+				this.shadowColor = shadowColor;
+			}
+			if (typeof diffuseColor === 'string') {
+				diffuseColor = hexToRgba(diffuseColor);
+				this.diffuseColor = diffuseColor;
+			}
 
 			app.defaultViewport();
 			app.defaultDrawFramebuffer();
@@ -127,6 +136,7 @@ export class GlUrtain extends HTMLElement {
 				lightColor,
 				shadowColor,
 				diffuseColor,
+				offset: { z: 0.02 },
 			});
 			drawB({
 				scrunchness,
@@ -134,7 +144,21 @@ export class GlUrtain extends HTMLElement {
 				lightColor,
 				shadowColor,
 				diffuseColor,
+				offset: { z: 0 },
 			});
+		};
+		requestAnimationFrame(draw);
+	}
+
+	public onVisibilityChange:
+		| ((event: CustomEvent<boolean>) => void)
+		| undefined;
+	protected handleVisibilityChange(visible: boolean) {
+		this.style.display = visible ? '' : 'none';
+		const event = new CustomEvent('visibilitychange', {
+			detail: visible,
 		});
+		this.onVisibilityChange?.(event);
+		this.dispatchEvent(event);
 	}
 }

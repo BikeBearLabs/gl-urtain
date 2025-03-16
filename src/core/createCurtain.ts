@@ -1,6 +1,6 @@
 import { type ReadableStore } from '@/lib/store/ReadableStore.js';
 import { mat4, vec2, vec3 } from 'gl-matrix';
-import { PicoGL, type App } from 'picogl';
+import { PicoGL, type Texture, type App } from 'picogl';
 import ballVertSource from './cloth/scene/ball.vert';
 import clothVertSource from './cloth/scene/cloth.vert';
 import phongFragSource from './cloth/scene/phong.frag';
@@ -8,6 +8,7 @@ import quadVertSource from './cloth/scene/quad.vert';
 import collisionStepFragSource from './cloth/simulation/collision-step.frag';
 import constraintStepFragSource from './cloth/simulation/constraint-step.frag';
 import forceStepFragSource from './cloth/simulation/force-step.frag';
+import cullingStepFragSource from './cloth/simulation/culling-step.frag';
 import normalStepFragSource from './cloth/simulation/normal-step.frag';
 import { createSphere } from './sphere/createSphere.js';
 import { Store } from '@/lib/store/Store.js';
@@ -15,11 +16,13 @@ import { use } from '@/lib/store/use.js';
 import { degToRad } from '@/lib/math/degToRad.js';
 import { derive } from '@/lib/store/derive.js';
 import { type RgbaColor } from '@/lib/color/RgbaColor.js';
+import { readPixelsAsync } from './gl/readPixelsAsync.js';
 
 export async function createCurtain({
 	app,
 	canvas,
 	canvasSize,
+	onVisibilityChange,
 }: {
 	app: App;
 	canvas: HTMLCanvasElement;
@@ -27,9 +30,10 @@ export async function createCurtain({
 		width: number | undefined;
 		height: number | undefined;
 	}>;
+	onVisibilityChange?: (visible: boolean) => void;
 }) {
-	const constraintIterationCount = 64;
-	const simulationTextureSize = 256;
+	const constraintIterationCount = 16;
+	const resolution = 128;
 
 	const quadShader = app.createShader(PicoGL.VERTEX_SHADER, quadVertSource);
 	const phongShader = app.createShader(
@@ -41,6 +45,7 @@ export async function createCurtain({
 		forceStepProgram,
 		constraintStepProgram,
 		collisionStepProgram,
+		cullingStepProgram,
 		normalStepProgram,
 		ballProgram,
 		clothProgram,
@@ -48,6 +53,7 @@ export async function createCurtain({
 		[quadShader, forceStepFragSource],
 		[quadShader, constraintStepFragSource],
 		[quadShader, collisionStepFragSource],
+		[quadShader, cullingStepFragSource],
 		[quadShader, normalStepFragSource],
 		[ballVertSource, phongShader],
 		[clothVertSource, phongShader],
@@ -142,13 +148,13 @@ export async function createCurtain({
 
 	//#region cloth
 	const clothPosition = vec3.fromValues(-0.5, 0.5, 0);
-	const clothParticleCount = simulationTextureSize ** 2;
+	const clothParticleCount = resolution ** 2;
 	const clothPositionsBuf = new Float32Array(clothParticleCount * 4);
 	const clothNormalsBuf = new Float32Array(clothParticleCount * 4);
 	const clothUvsBuf = new Float32Array(clothParticleCount * 2);
-	const clothPositionsIndicesBuf = new Int16Array(clothParticleCount * 2);
+	const clothTexelCoordinatesBuf = new Int16Array(clothParticleCount * 2);
 	const clothIndicesBuf = new Uint16Array(
-		(simulationTextureSize - 1) * (simulationTextureSize - 1) * 6,
+		(resolution - 1) * (resolution - 1) * 6,
 	);
 
 	let indexI = 0;
@@ -156,14 +162,14 @@ export async function createCurtain({
 		const vec4i = i * 4;
 		const vec2i = i * 2;
 
-		const x = i % simulationTextureSize;
-		const y = Math.floor(i / simulationTextureSize);
+		const x = i % resolution;
+		const y = Math.floor(i / resolution);
 
-		const u = x / simulationTextureSize;
-		const v = y / simulationTextureSize;
+		const u = x / resolution;
+		const v = y / resolution;
 
 		clothPositionsBuf[vec4i] = u + clothPosition[0];
-		clothPositionsBuf[vec4i + 1] = -v + clothPosition[1];
+		clothPositionsBuf[vec4i + 1] = -v * 0.95 + clothPosition[1];
 		clothPositionsBuf[vec4i + 2] = clothPosition[2];
 
 		clothNormalsBuf[vec4i + 2] = 1;
@@ -171,26 +177,24 @@ export async function createCurtain({
 		clothUvsBuf[vec2i] = u;
 		clothUvsBuf[vec2i + 1] = v;
 
-		clothPositionsIndicesBuf[vec2i] = i % simulationTextureSize;
-		clothPositionsIndicesBuf[vec2i + 1] = Math.floor(
-			i / simulationTextureSize,
-		);
+		clothTexelCoordinatesBuf[vec2i] = i % resolution;
+		clothTexelCoordinatesBuf[vec2i + 1] = Math.floor(i / resolution);
 
-		if (x < simulationTextureSize - 1 && y < simulationTextureSize - 1) {
+		if (x < resolution - 1 && y < resolution - 1) {
 			clothIndicesBuf[indexI] = i;
-			clothIndicesBuf[indexI + 1] = i + simulationTextureSize;
-			clothIndicesBuf[indexI + 2] = i + simulationTextureSize + 1;
+			clothIndicesBuf[indexI + 1] = i + resolution;
+			clothIndicesBuf[indexI + 2] = i + resolution + 1;
 			clothIndicesBuf[indexI + 3] = i;
-			clothIndicesBuf[indexI + 4] = i + simulationTextureSize + 1;
+			clothIndicesBuf[indexI + 4] = i + resolution + 1;
 			clothIndicesBuf[indexI + 5] = i + 1;
 			indexI += 6;
 		}
 	}
 
-	const clothPositionsIndices = app.createVertexBuffer(
+	const clothTexelCoordinates = app.createVertexBuffer(
 		PicoGL.SHORT,
 		2,
-		clothPositionsIndicesBuf,
+		clothTexelCoordinatesBuf,
 	);
 	const clothUvs = app.createVertexBuffer(PicoGL.FLOAT, 2, clothUvsBuf);
 	const clothIndices = app.createIndexBuffer(
@@ -199,7 +203,7 @@ export async function createCurtain({
 	);
 	const clothVertices = app
 		.createVertexArray()
-		.vertexAttributeBuffer(0, clothPositionsIndices)
+		.vertexAttributeBuffer(0, clothTexelCoordinates)
 		.vertexAttributeBuffer(1, clothUvs)
 		.indexBuffer(clothIndices);
 	const clothColorDefault: RgbaColor = [255, 244, 230, 255];
@@ -220,8 +224,8 @@ export async function createCurtain({
 	);
 	const clothNormalTexture = app.createTexture2D(
 		clothNormalsBuf,
-		simulationTextureSize,
-		simulationTextureSize,
+		resolution,
+		resolution,
 		{
 			internalFormat: PicoGL.RGBA32F,
 			minFilter: PicoGL.NEAREST,
@@ -235,6 +239,14 @@ export async function createCurtain({
 		.uniformBlock('SceneUniforms', sceneUniformBuffer)
 		.texture('uDiffuse', clothTexture)
 		.texture('uNormalBuffer', clothNormalTexture);
+	const clothPositionOffset = new Store({ x: 0, y: 0, z: 0 });
+	use({ clothPositionOffset }, ({ $clothPositionOffset }) => {
+		clothRenderDrawCall.uniform('uPositionOffset', [
+			$clothPositionOffset.x,
+			$clothPositionOffset.y,
+			$clothPositionOffset.z,
+		]);
+	});
 	const drawCloth = () => {
 		app.defaultViewport();
 		app.defaultDrawFramebuffer();
@@ -244,6 +256,7 @@ export async function createCurtain({
 
 	//#region ball
 	const ballRadiusBase = 0.02;
+	const ballRadiusMax = 0.1;
 	const ballRadiusAmplitude = 0.05;
 	const ballPosition = vec3.fromValues(0, 0, 0.02);
 	const ballGeometry = createSphere(ballRadiusBase, 32, 32);
@@ -269,7 +282,7 @@ export async function createCurtain({
 	const ballUniforms = app
 		.createUniformBuffer([PicoGL.FLOAT_VEC4, PicoGL.FLOAT])
 		.set(0, ballPosition)
-		.set(1, ballRadiusBase)
+		.set(1, 0)
 		.update();
 	const ballColor = new Uint8Array([255, 20, 20]);
 	const ballTexture = app.createTexture2D(ballColor, 1, 1, {
@@ -282,7 +295,7 @@ export async function createCurtain({
 		.texture('uDiffuse', ballTexture);
 	const ballScreenSpacePosition = new Store({ x: 0, y: 0, t: NaN });
 	const ballScreenSpaceOldPosition = new Store({ x: 0, y: 0, t: NaN });
-	canvas.addEventListener('mousemove', ({ clientX, clientY }) => {
+	window.addEventListener('pointermove', ({ clientX, clientY }) => {
 		ballScreenSpaceOldPosition.set(ballScreenSpacePosition.get());
 		ballScreenSpacePosition.set({
 			x: clientX - canvas.offsetLeft,
@@ -330,9 +343,14 @@ export async function createCurtain({
 			ballVelocity.set(newVelocity);
 		},
 	);
-	const ballRadius = new Store(ballRadiusBase);
+	const ballRadius = new Store(0);
 	let ballRadiusRafHandle = requestAnimationFrame(function ballRadiusRaf() {
 		ballRadiusRafHandle = requestAnimationFrame(ballRadiusRaf);
+
+		if (Number.isNaN(ballScreenSpacePosition.get().t)) {
+			ballRadius.set(0);
+			return;
+		}
 
 		const { x, y } = ballVelocity.get();
 		const speed = Math.abs(Math.hypot(x, y));
@@ -343,7 +361,7 @@ export async function createCurtain({
 		ballRadius.update((v) => {
 			const diff = targetRadius - v;
 			const step = diff * 0.05;
-			const newRadius = v + step;
+			const newRadius = Math.min(v + step, ballRadiusMax);
 
 			return newRadius;
 		});
@@ -415,8 +433,8 @@ export async function createCurtain({
 	//#region position targets
 	const positionTargetA = app.createTexture2D(
 		clothPositionsBuf,
-		simulationTextureSize,
-		simulationTextureSize,
+		resolution,
+		resolution,
 		{
 			internalFormat: PicoGL.RGBA32F,
 			minFilter: PicoGL.NEAREST,
@@ -425,18 +443,14 @@ export async function createCurtain({
 			wrapT: PicoGL.CLAMP_TO_EDGE,
 		},
 	);
-	const positionTargetB = app.createTexture2D(
-		simulationTextureSize,
-		simulationTextureSize,
-		{
-			internalFormat: PicoGL.RGBA32F,
-		},
-	);
+	const positionTargetB = app.createTexture2D(resolution, resolution, {
+		internalFormat: PicoGL.RGBA32F,
+	});
 
 	let oldPositionTargetA = app.createTexture2D(
 		clothPositionsBuf,
-		simulationTextureSize,
-		simulationTextureSize,
+		resolution,
+		resolution,
 		{
 			internalFormat: PicoGL.RGBA32F,
 			minFilter: PicoGL.NEAREST,
@@ -445,13 +459,9 @@ export async function createCurtain({
 			wrapT: PicoGL.CLAMP_TO_EDGE,
 		},
 	);
-	let oldPositionTargetB = app.createTexture2D(
-		simulationTextureSize,
-		simulationTextureSize,
-		{
-			internalFormat: PicoGL.RGBA32F,
-		},
-	);
+	let oldPositionTargetB = app.createTexture2D(resolution, resolution, {
+		internalFormat: PicoGL.RGBA32F,
+	});
 	const swapOldPositionTargets = () => {
 		[
 			//
@@ -472,8 +482,8 @@ export async function createCurtain({
 		...(function* () {
 			for (
 				let i = 0;
-				i < simulationTextureSize;
-				i += (simulationTextureSize - 1) / (pinCount * 2)
+				i < resolution;
+				i += (resolution - 1) / (pinCount * 2)
 			) {
 				const vec4i = Math.round(i) * 4;
 
@@ -512,18 +522,13 @@ export async function createCurtain({
 	for (const i of pinIndentIndices) {
 		pinsBuf[i + 3]! += pinIndent;
 	}
-	const pinTexture = app.createTexture2D(
-		pinsBuf,
-		simulationTextureSize,
-		simulationTextureSize,
-		{
-			internalFormat: PicoGL.RGBA32F,
-			minFilter: PicoGL.NEAREST,
-			magFilter: PicoGL.NEAREST,
-			wrapS: PicoGL.CLAMP_TO_EDGE,
-			wrapT: PicoGL.CLAMP_TO_EDGE,
-		},
-	);
+	const pinTexture = app.createTexture2D(pinsBuf, resolution, resolution, {
+		internalFormat: PicoGL.RGBA32F,
+		minFilter: PicoGL.NEAREST,
+		magFilter: PicoGL.NEAREST,
+		wrapS: PicoGL.CLAMP_TO_EDGE,
+		wrapT: PicoGL.CLAMP_TO_EDGE,
+	});
 	const pinScrunchDirection = new Store<-1 | 1>(1);
 	const pinScrunchness = new Store(0);
 	use(
@@ -568,7 +573,7 @@ export async function createCurtain({
 		forceFbo.colorTarget(1, oldPositionTargetB);
 		swapOldPositionTargets();
 
-		app.viewport(0, 0, simulationTextureSize, simulationTextureSize);
+		app.viewport(0, 0, resolution, resolution);
 
 		app.drawFramebuffer(forceFbo);
 		forceDrawCall.draw();
@@ -576,7 +581,7 @@ export async function createCurtain({
 	//#endregion
 
 	//#region constraint
-	const structuralRestDistance = 1 / simulationTextureSize;
+	const structuralRestDistance = 1 / resolution;
 	const shearRestDistance = Math.sqrt(
 		3 * structuralRestDistance * structuralRestDistance,
 	);
@@ -728,14 +733,71 @@ export async function createCurtain({
 	};
 	//#endregion
 
+	//#region culling
+	const cullingFbo = app.createFramebuffer();
+	const cullingMaxLevel = Math.log2(resolution);
+	const cullingTarget = app.createTexture2D(resolution, resolution, {
+		internalFormat: PicoGL.R32F,
+		minFilter: PicoGL.LINEAR_MIPMAP_LINEAR,
+		magFilter: PicoGL.NEAREST,
+		wrapS: PicoGL.CLAMP_TO_EDGE,
+		wrapT: PicoGL.CLAMP_TO_EDGE,
+		maxLOD: cullingMaxLevel,
+	});
+	cullingTarget.data(new Float32Array(clothParticleCount));
+	const cullingDrawCall = app.createDrawCall(
+		cullingStepProgram,
+		quadVertices,
+	);
+	const culledVisibilityAverage = new Float32Array(1);
+	const culled = new Store(false);
+	const drawCullingStep = () => {
+		app.drawFramebuffer(cullingFbo);
+		cullingFbo.colorTarget(0, cullingTarget);
+		cullingDrawCall.texture('uPositionBuffer', positionTargetA).draw();
+
+		app.readFramebuffer(cullingFbo);
+		// use `bind` private api to properly bind the texture to gl & keep pico's internal state
+		(
+			cullingTarget as unknown as {
+				bind(unit: number): Texture;
+			}
+		).bind(Math.max(0, cullingTarget.currentUnit));
+		app.gl.generateMipmap(PicoGL.TEXTURE_2D);
+		app.gl.framebufferTexture2D(
+			PicoGL.FRAMEBUFFER,
+			PicoGL.COLOR_ATTACHMENT0,
+			PicoGL.TEXTURE_2D,
+			cullingTarget.texture,
+			cullingMaxLevel,
+		);
+		void (async () => {
+			await readPixelsAsync(
+				app.gl as WebGL2RenderingContext,
+				0,
+				0,
+				1,
+				1,
+				PicoGL.RED,
+				PicoGL.FLOAT,
+				culledVisibilityAverage,
+			);
+			culled.set(culledVisibilityAverage[0]! <= 0);
+		})();
+	};
+	use({ culled }, ({ $culled }) => {
+		onVisibilityChange?.(!$culled);
+	});
+	//#endregion
+
 	//#region normal
 	const normalFbo = app.createFramebuffer();
 	const clothOldNormalsBuf = new Float32Array(clothParticleCount * 4);
 	clothOldNormalsBuf.set(clothNormalsBuf);
 	let clothOldNormalTextureA = app.createTexture2D(
 		clothNormalsBuf,
-		simulationTextureSize,
-		simulationTextureSize,
+		resolution,
+		resolution,
 		{
 			internalFormat: PicoGL.RGBA32F,
 			minFilter: PicoGL.NEAREST,
@@ -744,13 +806,9 @@ export async function createCurtain({
 			wrapT: PicoGL.CLAMP_TO_EDGE,
 		},
 	);
-	let clothOldNormalTextureB = app.createTexture2D(
-		simulationTextureSize,
-		simulationTextureSize,
-		{
-			internalFormat: PicoGL.RGBA32F,
-		},
-	);
+	let clothOldNormalTextureB = app.createTexture2D(resolution, resolution, {
+		internalFormat: PicoGL.RGBA32F,
+	});
 	const swapOldNormalTextures = () => {
 		[
 			//
@@ -775,6 +833,8 @@ export async function createCurtain({
 	};
 	//#endregion
 
+	let destroyed = false;
+
 	return {
 		draw: ({
 			scrunchness: scrunchnessExternal = 0,
@@ -782,26 +842,62 @@ export async function createCurtain({
 			lightColor: lightColorExternal = lightColorDefault,
 			shadowColor: shadowColorExternal = shadowColorDefault,
 			diffuseColor: diffuseColorExternal = clothColorDefault,
+			offset: clothPositionOffsetExternal = { x: 0, y: 0, z: 0 },
 		}: {
 			scrunchness?: number;
 			scrunchDirection?: 1 | -1;
 			lightColor?: RgbaColor;
 			shadowColor?: RgbaColor;
 			diffuseColor?: RgbaColor;
+			offset?: { x?: number; y?: number; z?: number };
 		}) => {
+			if (destroyed) {
+				return;
+			}
+
 			pinScrunchness.set(scrunchnessExternal);
 			pinScrunchDirection.set(scrunchDirectionExternal);
 			lightColor.set(lightColorExternal);
 			shadowColor.set(shadowColorExternal);
 			clothColor.set(diffuseColorExternal);
+			clothPositionOffset.update((v) => {
+				const { x, y, z } = clothPositionOffsetExternal;
+
+				let changed = false;
+				if (x !== undefined && v.x !== x) {
+					v.x = x;
+					changed = true;
+				}
+				if (y !== undefined && v.y !== y) {
+					v.y = y;
+					changed = true;
+				}
+				if (z !== undefined && v.z !== z) {
+					v.z = z;
+					changed = true;
+				}
+
+				if (!changed) {
+					return v;
+				}
+
+				return { ...v };
+			});
 
 			drawForceStep();
 			drawConstraintStep();
 			drawCollisionStep();
+			drawCullingStep();
 			drawNormalStep();
 
 			drawCloth();
 			drawBall();
+		},
+		destroy: () => {
+			// TODO: properly implement destroy
+			cancelAnimationFrame(ballFrictionRafHandle);
+			cancelAnimationFrame(ballRadiusRafHandle);
+			destroyed = true;
 		},
 	};
 }
